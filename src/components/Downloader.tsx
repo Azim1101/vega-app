@@ -1,32 +1,26 @@
 import React, {useEffect, useLayoutEffect, useState} from 'react';
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  Alert,
-  Modal,
-  ToastAndroid,
-  Clipboard,
-} from 'react-native';
-import RNFS from 'react-native-fs';
+import {View, Text, TouchableOpacity, Modal, Pressable} from 'react-native';
 import {ifExists} from '../lib/file/ifExists';
-// import {
-//   download,
-//   completeHandler,
-//   checkForExistingDownloads,
-// } from '@kesha-antonov/react-native-background-downloader';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import Octicons from '@expo/vector-icons/Octicons';
 import {Stream} from '../lib/providers/types';
-import {MotiView} from 'moti';
+import Animated, {
+  useAnimatedStyle,
+  withRepeat,
+  withTiming,
+} from 'react-native-reanimated';
 import ReactNativeHapticFeedback from 'react-native-haptic-feedback';
-import {Skeleton} from 'moti/skeleton';
 import useContentStore from '../lib/zustand/contentStore';
-import {manifest} from '../lib/Manifest';
 import * as IntentLauncher from 'expo-intent-launcher';
-import notifee from '@notifee/react-native';
-import {EventType} from '@notifee/react-native';
-import useDownloadsStore from '../lib/zustand/downloadsStore';
+import {downloadManager} from '../lib/downloader';
+import {cancelHlsDownload} from '../lib/hlsDownloader2';
+// import {FFmpegKit} from 'ffmpeg-kit-react-native';
+import * as RNFS from '@dr.pogodin/react-native-fs';
+import useThemeStore from '../lib/zustand/themeStore';
+import DownloadBottomSheet from './DownloadBottomSheet';
+import {settingsStorage} from '../lib/storage';
+import {providerManager} from '../lib/services/ProviderManager';
+import {deleteDownloadedFileByBaseName} from '../lib/downloadLocation';
 
 const DownloadComponent = ({
   link,
@@ -41,6 +35,7 @@ const DownloadComponent = ({
   providerValue: string;
   title: string;
 }) => {
+  const {primary} = useThemeStore(state => state);
   const {provider} = useContentStore(state => state);
   const [alreadyDownloaded, setAlreadyDownloaded] = useState<string | boolean>(
     false,
@@ -48,69 +43,12 @@ const DownloadComponent = ({
   const [deleteModal, setDeleteModal] = useState(false);
   const [downloadModal, setDownloadModal] = useState(false);
   const [longPressModal, setLongPressModal] = useState(false);
+  const [cancelModal, setCancelModal] = useState(false);
+  const [downloadId, setDownloadId] = useState<number | null>(null);
   const [servers, setServers] = useState<Stream[]>([]);
   const [serverLoading, setServerLoading] = useState(false);
-  const [reqController, setReqController] = useState(new AbortController());
-
-  const {activeDownloads, removeActiveDownloads, setActiveDownloads} =
-    useDownloadsStore(state => state);
-
-  notifee.onBackgroundEvent(async ({type, detail}) => {
-    if (
-      type === EventType.ACTION_PRESS &&
-      detail.pressAction?.id === fileName
-    ) {
-      console.log('Cancel download');
-      RNFS.stopDownload(Number(detail.notification?.data?.jobId));
-      setAlreadyDownloaded(false);
-      removeActiveDownloads(fileName);
-      try {
-        const downloadDir = `${RNFS.DownloadDirectoryPath}/vega`;
-        const files = await RNFS.readDir(downloadDir);
-        // Find a file with the given name (without extension)
-        const file = files.find(file => {
-          const nameWithoutExtension = file.name
-            .split('.')
-            .slice(0, -1)
-            .join('.');
-          return nameWithoutExtension === detail.notification?.data?.fileName;
-        });
-        if (file) {
-          await RNFS.unlink(file.path);
-        }
-      } catch (error) {
-        console.log(error);
-      }
-    }
-  });
-  notifee.onForegroundEvent(async ({type, detail}) => {
-    if (
-      type === EventType.ACTION_PRESS &&
-      detail.pressAction?.id === fileName
-    ) {
-      console.log('Cancel download');
-      RNFS.stopDownload(Number(detail.notification?.data?.jobId));
-      setAlreadyDownloaded(false);
-      removeActiveDownloads(fileName);
-      try {
-        const downloadDir = `${RNFS.DownloadDirectoryPath}/vega`;
-        const files = await RNFS.readDir(downloadDir);
-        // Find a file with the given name (without extension)
-        const file = files.find(file => {
-          const nameWithoutExtension = file.name
-            .split('.')
-            .slice(0, -1)
-            .join('.');
-          return nameWithoutExtension === detail.notification?.data?.fileName;
-        });
-        if (file) {
-          await RNFS.unlink(file.path);
-        }
-      } catch (error) {
-        console.log(error);
-      }
-    }
-  });
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [downloadActive, setDownloadActive] = useState(false);
 
   // check if file already exists
   useLayoutEffect(() => {
@@ -121,154 +59,15 @@ const DownloadComponent = ({
     checkIfDownloaded();
   }, [fileName]);
 
-  const downloadFile = async (url: string, type: string) => {
-    setActiveDownloads(fileName);
-    if (await ifExists(fileName)) {
-      console.log('File already exists');
-      setAlreadyDownloaded(true);
-      removeActiveDownloads(fileName);
-      return;
-    }
-    try {
-      // downloadFile and save it to download folder
-      if (!(await RNFS.exists(`${RNFS.DownloadDirectoryPath}/vega`))) {
-        await RNFS.mkdir(`${RNFS.DownloadDirectoryPath}/vega`);
-      }
-      await notifee.requestPermission();
-      // Create a channel (required for Android)
-      const channelId = await notifee.createChannel({
-        id: 'download',
-        name: 'Download Notifications',
-      });
-      const downloadDest = `${RNFS.DownloadDirectoryPath}/vega/${fileName}.${type}`;
-      const ret = RNFS.downloadFile({
-        fromUrl: url,
-        progressInterval: 1000,
-        backgroundTimeout: 1000 * 60 * 60,
-        progressDivider: 1,
-        toFile: downloadDest,
-        background: true,
-        begin: (res: any) => {
-          console.log('Download has started', res);
-        },
-        progress: (res: any) => {
-          const progress = res.bytesWritten / res.contentLength;
-          const body =
-            res.contentLength < 1024 * 1024 * 1024
-              ? // less than 1GB?
-
-                Math.round(res.bytesWritten / 1024 / 1024) +
-                ' / ' +
-                Math.round(res.contentLength / 1024 / 1024) +
-                ' MB'
-              : parseFloat((res.bytesWritten / 1024 / 1024 / 1024).toFixed(2)) +
-                ' / ' +
-                parseFloat(
-                  (res.contentLength / 1024 / 1024 / 1024).toFixed(2),
-                ) +
-                ' GB';
-          console.log('Download progress:', progress * 100);
-          notifee.displayNotification({
-            id: fileName,
-            title: title,
-            data: {jobId: ret.jobId, fileName},
-            body: body,
-            android: {
-              channelId,
-              color: '#FF6347',
-              onlyAlertOnce: true,
-              progress: {
-                max: 100,
-                current: progress * 100,
-                indeterminate: false,
-              },
-              pressAction: {
-                id: 'default',
-              },
-              actions: [
-                {
-                  title: 'Cancel',
-                  pressAction: {
-                    id: fileName,
-                  },
-                },
-              ],
-            },
-          });
-        },
-      });
-      ret.promise.then(res => {
-        console.log('Download complete', res);
-        setAlreadyDownloaded(true);
-        notifee.cancelNotification(fileName);
-        removeActiveDownloads(fileName);
-      });
-      ret.promise.catch(err => {
-        console.log('Download error:', err);
-        Alert.alert('Download failed', err.message || 'Failed to download');
-        removeActiveDownloads(fileName);
-        setAlreadyDownloaded(false);
-        notifee.cancelNotification(fileName);
-      });
-    } catch (error: any) {
-      console.error('Download error:', error);
-      Alert.alert('Download failed', 'Failed to download');
-      removeActiveDownloads(fileName);
-      setAlreadyDownloaded(false);
-    }
-
-    // const jobId = fileName;
-    // console.log('Downloading:', fileName);
-
-    // let task = download({
-    //   isAllowedOverMetered: true,
-    //   isAllowedOverRoaming: true,
-    //   id: jobId,
-    //   url: url,
-    //   destination: `${RNFS.DownloadDirectoryPath}/vega/${fileName}.${type}`,
-    //   metadata: {},
-    //   isNotificationVisible: true,
-    // })
-    //   .begin(data => {
-    //     console.log(`Going to download ${data.expectedBytes} bytes!`);
-    //     console.log('Downloading:', data);
-    //   })
-    //   .progress(({bytesDownloaded, bytesTotal}) => {
-    //     console.log(`Downloaded: ${(bytesDownloaded / bytesTotal) * 100}%`);
-    //   })
-    //   .done(({bytesDownloaded, bytesTotal}) => {
-    //     console.log('Download is done!', {bytesDownloaded, bytesTotal});
-    //     setIsDownloading(false);
-    //     setAlreadyDownloaded(true);
-    //     completeHandler(jobId);
-    //   })
-    //   .error(({error, errorCode}) => {
-    //     console.log('Download canceled due to error: ', {error, errorCode});
-    //     setIsDownloading(false);
-    //     task.stop();
-    //     Alert.alert('Download Canceled', 'failed to download');
-    //   });
-
-    // return () => {
-    //   task.stop();
-    // };
-  };
-
   // handle download deletion
   const deleteDownload = async () => {
-    const downloadDir = `${RNFS.DownloadDirectoryPath}/vega`;
     try {
-      const files = await RNFS.readDir(downloadDir);
-      // Find a file with the given name (without extension)
-      const file = files.find(file => {
-        const nameWithoutExtension = file.name
-          .split('.')
-          .slice(0, -1)
-          .join('.');
-        return nameWithoutExtension === fileName;
-      });
-      if (file) {
-        await RNFS.unlink(file.path);
+      const deleted = await deleteDownloadedFileByBaseName(
+        settingsStorage.getDownloadLocationConfig(),
+        fileName,
+      );
+
+      if (deleted) {
         setAlreadyDownloaded(false);
         setDeleteModal(false);
       }
@@ -279,212 +78,219 @@ const DownloadComponent = ({
 
   // choose server
   useEffect(() => {
+    const controller = new AbortController();
     if (!downloadModal && !longPressModal) {
       return;
     }
     const getServer = async () => {
       setServerLoading(true);
-      const url = await manifest[providerValue || provider.value].getStream(
-        link,
-        type,
-        reqController.signal,
-      );
-      setServerLoading(false);
-      setServers(url);
+      setServerError(null);
+      try {
+        const servers = await providerManager.getStream({
+          link,
+          type,
+          signal: controller.signal,
+          providerValue: providerValue || provider.value,
+        });
+        const filteredServers = servers;
+        // .filter(
+        //   server =>
+        //     !manifest[
+        //       providerValue || provider.value
+        //     ].nonDownloadableServer?.includes(server.server),
+        // );
+        setServers(filteredServers);
+      } catch (error: any) {
+        console.error('Error fetching servers:', error);
+        const errorMessage = error?.message || 'Failed to fetch servers';
+        setServerError(errorMessage);
+        setServers([]);
+      } finally {
+        setServerLoading(false);
+      }
     };
     getServer();
+
+    return () => {
+      controller.abort();
+    };
   }, [downloadModal, longPressModal]);
 
   // on holdPress external downloader
-  const longPressDownload = async (link: string) => {
+  const longPressDownload = async (link: string, type?: string) => {
     try {
       await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
         data: link,
-        type: 'application/octet-stream',
+        type: type || 'video/*',
       });
     } catch (error) {
       console.log(error);
     }
   };
 
+  const animatedStyles = useAnimatedStyle(() => ({
+    opacity: withRepeat(withTiming(0.5, {duration: 500}), -1, true),
+  }));
+
   return (
-    <View className="flex-row items-center mt-1 justify-between rounded-full bg-white/30 p-1">
-      {activeDownloads.includes(fileName) ? (
-        <MotiView
-          style={{
-            marginHorizontal: 4,
-          }}
-          onPress={() => console.log('Cancel download')}
-          // animate opacity to opacity while downloding
-          from={{opacity: 1}}
-          animate={{opacity: 0.5}}
-          //@ts-ignore
-          transition={{type: 'timing', duration: 500, loop: true}}>
-          <MaterialIcons name="downloading" size={27} color="tomato" />
-        </MotiView>
-      ) : alreadyDownloaded ? (
-        <TouchableOpacity onPress={() => setDeleteModal(true)} className="mx-1">
-          <MaterialIcons name="delete-outline" size={27} color="#c1c4c9" />
-        </TouchableOpacity>
-      ) : (
-        <TouchableOpacity
-          onPress={() => {
-            setDownloadModal(true);
-          }}
-          onLongPress={() => {
-            ReactNativeHapticFeedback.trigger('effectHeavyClick', {
-              enableVibrateFallback: true,
-              ignoreAndroidSystemSettings: false,
-            });
-            setLongPressModal(true);
-          }}
-          className="mx-2">
-          <Octicons name="download" size={25} color="#c1c4c9" />
-        </TouchableOpacity>
-      )}
-      {/* delete modal */}
-      {
-        <Modal animationType="fade" visible={deleteModal} transparent={true}>
-          <View className="flex-1 bg-black/10 justify-center items-center p-4">
-            <View className="bg-tertiary p-3 w-80 rounded-md justify-center items-center">
-              <Text className="text-2xl font-semibold my-3 text-white">
-                Confirm to delete
-              </Text>
-              <View className="flex-row items-center justify-evenly w-full my-5">
-                <TouchableOpacity
-                  onPress={deleteDownload}
-                  className="bg-primary p-2 rounded-md m-1 px-3">
-                  <Text className="text-white font-semibold text-base rounded-md capitalize px-1">
-                    Yes
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => setDeleteModal(false)}
-                  className="bg-primary p-2 px-4 rounded-md m-1">
-                  <Text className="text-white font-semibold text-base rounded-md capitalize px-1">
-                    No
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        </Modal>
-      }
-      {/* download modal */}
-      {
-        <Modal animationType="fade" visible={downloadModal} transparent={true}>
-          <View className="flex-1 bg-black/10 justify-center items-center p-4">
-            <View className="bg-tertiary p-3 w-full rounded-md justify-center items-center">
-              <Text className="text-lg font-semibold my-3 text-white">
-                Select a server to download
-              </Text>
-              <View className="flex-row items-center flex-wrap gap-1 justify-evenly w-full my-5">
-                {!serverLoading
-                  ? servers?.map((server, index) => (
-                      <TouchableOpacity
-                        key={server.server + index}
-                        onPress={() => {
-                          setDownloadModal(false);
-                          downloadFile(server.link, server.type);
-                        }}
-                        onLongPress={() => {
-                          ReactNativeHapticFeedback.trigger(
-                            'effectHeavyClick',
-                            {
-                              enableVibrateFallback: true,
-                              ignoreAndroidSystemSettings: false,
-                            },
-                          );
-                          Clipboard.setString(server.link);
-                          ToastAndroid.show(
-                            'Link copied to clipboard',
-                            ToastAndroid.SHORT,
-                          );
-                        }}
-                        className="bg-primary p-2 rounded-md m-1">
-                        <Text className="text-white text-xs rounded-md capitalize px-1">
-                          {server.server}
-                        </Text>
-                      </TouchableOpacity>
-                    ))
-                  : Array.from({length: 3}).map((_, index) => (
-                      <Skeleton
-                        key={index}
-                        show={true}
-                        colorMode="dark"
-                        height={30}
-                        width={90}
-                      />
-                    ))}
-              </View>
-              <View className="flex-row items-center gap-2 w-full">
-                <MaterialIcons
-                  name="info-outline"
-                  size={14}
-                  color="#c1c4c9"
-                  onPress={() => setDownloadModal(false)}
-                />
-                <Text className="text-[10px] text-center text-white">
-                  Long press to copy download link
+    <>
+      <View className="flex-row items-center mt-1 justify-between rounded-full bg-white/30 p-1">
+        {downloadActive ? (
+          <Animated.View
+            style={[
+              {
+                marginHorizontal: 4,
+              },
+              animatedStyles,
+            ]}>
+            <TouchableOpacity
+              onPress={() => {
+                setCancelModal(prev => !prev);
+                console.log('pressed');
+              }}>
+              <MaterialIcons name="downloading" size={27} color={primary} />
+            </TouchableOpacity>
+          </Animated.View>
+        ) : alreadyDownloaded ? (
+          <TouchableOpacity
+            onPress={() => setDeleteModal(true)}
+            className="mx-1">
+            <MaterialIcons name="delete-outline" size={27} color="#c1c4c9" />
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            onPress={() => {
+              if (
+                settingsStorage.getBool('alwaysExternalDownloader') === true
+              ) {
+                setLongPressModal(true);
+              } else {
+                setDownloadModal(true);
+              }
+            }}
+            onLongPress={() => {
+              if (settingsStorage.getBool('hapticFeedback') !== false) {
+                ReactNativeHapticFeedback.trigger('effectHeavyClick', {
+                  enableVibrateFallback: true,
+                  ignoreAndroidSystemSettings: false,
+                });
+              }
+              setLongPressModal(true);
+            }}
+            className="mx-2">
+            <Octicons name="download" size={25} color="#c1c4c9" />
+          </TouchableOpacity>
+        )}
+        {/* delete modal */}
+        {
+          <Modal animationType="fade" visible={deleteModal} transparent={true}>
+            <View className="flex-1 bg-black/10 justify-center items-center p-4">
+              <View className="bg-tertiary p-3 w-80 rounded-md justify-center items-center">
+                <Text className="text-2xl font-semibold my-3 text-white">
+                  Confirm to delete
                 </Text>
+                <View className="flex-row items-center justify-evenly w-full my-5">
+                  <TouchableOpacity
+                    onPress={deleteDownload}
+                    className="p-2 rounded-md m-1 px-3"
+                    style={{backgroundColor: primary}}>
+                    <Text className="text-white font-semibold text-base rounded-md capitalize px-1">
+                      Yes
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => setDeleteModal(false)}
+                    className="p-2 px-4 rounded-md m-1"
+                    style={{backgroundColor: primary}}>
+                    <Text className="text-white font-semibold text-base rounded-md capitalize px-1">
+                      No
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </View>
-              {/* close modal */}
-              <TouchableOpacity
-                onPress={() => {
-                  setDownloadModal(false);
-                  reqController.abort();
-                }}
-                className="absolute top-2 right-2">
-                <MaterialIcons name="close" size={20} color="#c1c4c9" />
-              </TouchableOpacity>
             </View>
-          </View>
-        </Modal>
-      }
-      {/* long press modal */}
-      {
-        <Modal animationType="fade" visible={longPressModal} transparent={true}>
-          <View className="flex-1 bg-black/10 justify-center items-center p-4">
-            <View className="bg-tertiary p-3 w-full rounded-md justify-center items-center">
-              <Text className="text-lg font-semibold my-3 text-white">
-                Select a server to open
-              </Text>
-              <View className="flex-row items-center flex-wrap gap-1 justify-evenly w-full my-5">
-                {!serverLoading
-                  ? servers?.map((server, index) => (
-                      <TouchableOpacity
-                        key={server.server + index}
-                        onPress={() => {
-                          setLongPressModal(false);
-                          longPressDownload(server.link);
-                        }}
-                        className="bg-primary p-2 rounded-md m-1">
-                        <Text className="text-white text-xs rounded-md capitalize px-1">
-                          {server.server}
-                        </Text>
-                      </TouchableOpacity>
-                    ))
-                  : Array.from({length: 3}).map((_, index) => (
-                      <Skeleton
-                        key={index}
-                        show={true}
-                        colorMode="dark"
-                        height={30}
-                        width={90}
-                      />
-                    ))}
-              </View>
-              {/* close modal */}
-              <TouchableOpacity
-                onPress={() => setLongPressModal(false)}
-                className="absolute top-2 right-2">
-                <MaterialIcons name="close" size={20} color="#c1c4c9" />
-              </TouchableOpacity>
-            </View>
-          </View>
-        </Modal>
-      }
-    </View>
+          </Modal>
+        }
+        {/* download modal */}
+        <DownloadBottomSheet
+          setModal={setDownloadModal}
+          showModal={downloadModal}
+          data={servers}
+          loading={serverLoading}
+          error={serverError}
+          title="Select Server To Download"
+          onPressVideo={(server: Stream) => {
+            downloadManager({
+              title: title,
+              url: server.link,
+              fileName: fileName,
+              fileType: server.type,
+              setDownloadActive: setDownloadActive,
+              setAlreadyDownloaded: setAlreadyDownloaded,
+              setDownloadId: setDownloadId,
+              headers: server?.headers,
+              deleteDownload: deleteDownload,
+            });
+          }}
+          onPressSubs={(sub: {link: string; type: string; title: string}) => {
+            downloadManager({
+              title: title + ' ' + sub.title + ' Subtitle ',
+              url: sub.link,
+              fileName: fileName + '-' + sub.title,
+              fileType: sub.type,
+              setDownloadActive: setDownloadActive,
+              setAlreadyDownloaded: () => {},
+              setDownloadId: setDownloadId,
+              deleteDownload: () => {},
+            });
+          }}
+        />
+        {/* long press modal */}
+        <DownloadBottomSheet
+          setModal={setLongPressModal}
+          showModal={longPressModal}
+          data={servers}
+          loading={serverLoading}
+          error={serverError}
+          title="Select Server To Open"
+          onPressVideo={(server: Stream) => {
+            longPressDownload(server.link);
+          }}
+          onPressSubs={(sub: {link: string; type: string; title: string}) => {
+            longPressDownload(sub.link, 'text/vtt');
+          }}
+        />
+      </View>
+      {cancelModal && downloadId && (
+        <Pressable
+          onPress={async () => {
+            setCancelModal(false);
+            try {
+              // Check if this is an HLS download (ID >= 1000) or regular download
+              if (typeof downloadId === 'number' && downloadId >= 1000) {
+                // HLS download cancellation
+                cancelHlsDownload(downloadId);
+              } else {
+                // Regular download cancellation
+                RNFS.stopDownload(downloadId);
+                //FFMPEGKIT CANCEL
+                // FFmpegKit.cancel(downloadId);
+              }
+              setDownloadActive(false);
+
+              await deleteDownloadedFileByBaseName(
+                settingsStorage.getDownloadLocationConfig(),
+                fileName,
+              );
+            } catch (error) {
+              console.log('Error cancelling download', error);
+            }
+          }}
+          className="absolute right-12 bg-quaternary/80 bottom-3 rounded-md px-2">
+          <Text className="text-lg text-white">Cancel</Text>
+        </Pressable>
+      )}
+    </>
   );
 };
 

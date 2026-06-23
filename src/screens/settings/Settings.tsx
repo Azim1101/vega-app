@@ -1,388 +1,374 @@
 import {
   View,
   Text,
-  TextInput,
-  Alert,
-  Linking,
   TouchableOpacity,
   TouchableNativeFeedback,
-  ToastAndroid,
+  ScrollView,
+  Dimensions,
 } from 'react-native';
-import React from 'react';
-import {MMKV, MmmkvCache} from '../../lib/Mmkv';
-import {useState} from 'react';
+import React, {useCallback, useMemo} from 'react';
+import {
+  settingsStorage,
+  cacheStorageService,
+  ProviderExtension,
+} from '../../lib/storage';
 import ReactNativeHapticFeedback from 'react-native-haptic-feedback';
-import pkg from '../../../package.json';
 import useContentStore from '../../lib/zustand/contentStore';
-import {Dropdown} from 'react-native-element-dropdown';
-import SharedGroupPreferences from 'react-native-shared-group-preferences';
-import {providersList} from '../../lib/constants';
-import {startActivityAsync, ActivityAction} from 'expo-intent-launcher';
-import {Feather} from '@expo/vector-icons';
-import {NativeStackScreenProps} from '@react-navigation/native-stack';
-import {SettingsStackParamList} from '../../App';
-
-const players = [
-  {
-    label: 'None',
-    value: '',
-  },
-  {
-    label: 'VLC Player',
-    value: 'vlc',
-  },
-  {
-    label: 'MX Player',
-    value: 'mx',
-  },
-];
+import {
+  NativeStackScreenProps,
+  NativeStackNavigationProp,
+} from '@react-navigation/native-stack';
+import {SettingsStackParamList, TabStackParamList} from '../../App';
+import {
+  MaterialCommunityIcons,
+  Feather,
+  MaterialIcons,
+} from '@expo/vector-icons';
+import useThemeStore from '../../lib/zustand/themeStore';
+import useWatchHistoryStore from '../../lib/zustand/watchHistrory';
+import Animated, {FadeInDown, FadeInUp, Layout} from 'react-native-reanimated';
+import {useNavigation} from '@react-navigation/native';
+import RenderProviderFlagIcon from '../../components/RenderProviderFLagIcon';
 
 type Props = NativeStackScreenProps<SettingsStackParamList, 'Settings'>;
 
 const Settings = ({navigation}: Props) => {
-  const [BaseUrl, setBaseUrl] = useState(MMKV.getString('baseUrl') || '');
-  const [OpenExternalPlayer, setOpenExternalPlayer] = useState(
-    players.find(player => player.value === MMKV.getString('externalPlayer')) ||
-      players[0],
+  const tabNavigation =
+    useNavigation<NativeStackNavigationProp<TabStackParamList>>();
+  const {primary} = useThemeStore(state => state);
+  const {provider, setProvider, installedProviders} = useContentStore(
+    state => state,
   );
-  const [UseCustomUrl, setUseCustomUrl] = useState(
-    MMKV.getBool('UseCustomUrl') || false,
-  );
-  const [ExcludedQualities, setExcludedQualities] = useState(
-    MMKV.getArray('ExcludedQualities') || [],
-  );
-  const [updateLoading, setUpdateLoading] = useState(false);
+  const {clearHistory} = useWatchHistoryStore(state => state);
 
-  const {provider, setProvider} = useContentStore(state => state);
-
-  // handle base url change
-  const onChange = async (text: string) => {
-    if (text.endsWith('/')) {
-      text = text.slice(0, -1);
-    }
-    MMKV.setString('baseUrl', text);
-    setBaseUrl(text);
-  };
-
-  // handle check for update
-  const checkForUpdate = async () => {
-    setUpdateLoading(true);
-    try {
-      const res = await fetch(
-        'https://api.github.com/repos/Zenda-Cross/vega-app/releases/latest',
-      );
-      const data = await res.json();
-      if (data.tag_name.replace('v', '') !== pkg.version) {
-        ToastAndroid.show('New update available', ToastAndroid.SHORT);
-        const url = data.html_url;
-        Alert.alert('Update', data.body, [
-          {text: 'Cancel'},
-          {text: 'Update', onPress: () => Linking.openURL(url)},
-        ]);
-        console.log('version', data.tag_name.replace('v', ''), pkg.version);
-      } else {
-        ToastAndroid.show('App is up to date', ToastAndroid.SHORT);
-        console.log('version', data.tag_name.replace('v', ''), pkg.version);
+  const handleProviderSelect = useCallback(
+    (item: ProviderExtension) => {
+      setProvider(item);
+      // Add haptic feedback
+      if (settingsStorage.isHapticFeedbackEnabled()) {
+        ReactNativeHapticFeedback.trigger('virtualKey', {
+          enableVibrateFallback: true,
+          ignoreAndroidSystemSettings: false,
+        });
       }
-    } catch (error) {
-      ToastAndroid.show('Failed to check for update', ToastAndroid.SHORT);
-      console.log('Update error', error);
+      // Navigate to home screen
+      tabNavigation.navigate('HomeStack');
+    },
+    [setProvider, tabNavigation],
+  );
+
+  const renderProviderItem = useCallback(
+    (item: ProviderExtension, isSelected: boolean) => (
+      <TouchableOpacity
+        key={item.value}
+        onPress={() => handleProviderSelect(item)}
+        className={`mr-3 rounded-lg ${
+          isSelected ? 'bg-[#333333]' : 'bg-[#262626]'
+        }`}
+        style={{
+          width: Dimensions.get('window').width * 0.3, // Shows 2.5 items
+          height: 65, // Increased height
+          borderWidth: 1.5,
+          borderColor: isSelected ? primary : '#333333',
+        }}>
+        <View className="flex-col items-center justify-center h-full p-2">
+          <RenderProviderFlagIcon type={item.type} />
+          <Text
+            numberOfLines={1}
+            className="text-white text-xs font-medium text-center mt-2">
+            {item.display_name}
+          </Text>
+          {isSelected && (
+            <Text style={{position: 'absolute', top: 6, right: 6}}>
+              <MaterialIcons name="check-circle" size={16} color={primary} />
+            </Text>
+          )}
+        </View>
+      </TouchableOpacity>
+    ),
+    [handleProviderSelect, primary],
+  );
+
+  const providersList = useMemo(
+    () =>
+      installedProviders.map(item =>
+        renderProviderItem(item, provider.value === item.value),
+      ),
+    [installedProviders, provider.value, renderProviderItem],
+  );
+
+  const clearCacheHandler = useCallback(() => {
+    if (settingsStorage.isHapticFeedbackEnabled()) {
+      ReactNativeHapticFeedback.trigger('virtualKey', {
+        enableVibrateFallback: true,
+        ignoreAndroidSystemSettings: false,
+      });
     }
-    setUpdateLoading(false);
-  };
+    cacheStorageService.clearAll();
+  }, []);
+
+  const clearHistoryHandler = useCallback(() => {
+    if (settingsStorage.isHapticFeedbackEnabled()) {
+      ReactNativeHapticFeedback.trigger('virtualKey', {
+        enableVibrateFallback: true,
+        ignoreAndroidSystemSettings: false,
+      });
+    }
+    clearHistory();
+  }, [clearHistory]);
+
+  const AnimatedSection = ({
+    delay,
+    children,
+  }: {
+    delay: number;
+    children: React.ReactNode;
+  }) => (
+    <Animated.View
+      entering={FadeInDown.delay(delay).springify()}
+      layout={Layout.springify()}>
+      {children}
+    </Animated.View>
+  );
 
   return (
-    <View className="w-full h-full bg-black p-4">
-      <Text className="text-2xl font-bold text-white mt-7">Settings</Text>
+    <Animated.ScrollView
+      className="w-full h-full bg-black"
+      showsVerticalScrollIndicator={false}
+      bounces={true}
+      overScrollMode="always"
+      entering={FadeInUp.springify()}
+      layout={Layout.springify()}
+      contentContainerStyle={{
+        paddingTop: 15,
+        paddingBottom: 24,
+        flexGrow: 1,
+      }}>
+      <View className="p-5">
+        <Animated.View entering={FadeInUp.springify()}>
+          <Text className="text-2xl font-bold text-white mb-6">Settings</Text>
+        </Animated.View>
 
-      {/* Content type */}
-      {
-        <View className=" flex-row items-center px-4 justify-between mt-5 bg-tertiary p-2 rounded-md">
-          <Text className="text-primary font-bold text-lg">
-            Choose Provider
-          </Text>
-          <View className="w-40">
-            <Dropdown
-              selectedTextStyle={{
-                color: 'white',
-                overflow: 'hidden',
-                height: 23,
-              }}
-              containerStyle={{
-                borderColor: 'black',
-                width: 150,
-                overflow: 'hidden',
-                padding: 2,
-                backgroundColor: 'black',
-              }}
-              labelField={'name'}
-              valueField={'value'}
-              placeholder="Select"
-              value={provider}
-              data={providersList}
-              onChange={async provider => {
-                setProvider(provider);
-              }}
-              renderItem={item => {
-                return (
-                  <View
-                    className={`bg-black text-white w-48 flex-row justify-start gap-2 items-center px-4 py-3 ${
-                      provider.value === item.value ? 'bg-quaternary' : ''
-                    }`}>
-                    <Text className=" text-white mb-2">
-                      {item.flag}
-                      &nbsp; &nbsp;
-                      {item.name}
+        {/* Content provider section */}
+        <AnimatedSection delay={100}>
+          <View className="mb-6 flex-col gap-3">
+            <Text className="text-gray-400 text-sm mb-1">Content Provider</Text>
+            <View className="bg-[#1A1A1A] rounded-xl py-4">
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{
+                  paddingHorizontal: 10,
+                }}>
+                {providersList}
+                {installedProviders.length === 0 && (
+                  <Text className="text-gray-500 text-sm">
+                    No providers installed
+                  </Text>
+                )}
+              </ScrollView>
+            </View>
+            {/* Extensions */}
+            <View className="bg-[#1A1A1A] rounded-xl overflow-hidden mb-3">
+              <TouchableNativeFeedback
+                onPress={() => navigation.navigate('Extensions')}
+                background={TouchableNativeFeedback.Ripple('#333333', false)}>
+                <View className="flex-row items-center justify-between p-4 mr-5">
+                  <View className="flex-row items-center">
+                    <MaterialCommunityIcons
+                      name="puzzle"
+                      size={22}
+                      color={primary}
+                    />
+                    <Text
+                      className="text-white ml-3 text-base flex-1"
+                      numberOfLines={1}>
+                      Provider Manager
                     </Text>
                   </View>
-                );
-              }}
-            />
-          </View>
-        </View>
-      }
-
-      {/* use custom base URL */}
-      {/* <View className=" flex-row items-center px-4 justify-between mt-5 bg-tertiary p-2 rounded-md">
-        <Text className="text-white font-semibold">use custom base URL</Text>
-        <Switch
-          thumbColor={UseCustomUrl ? 'tomato' : 'gray'}
-          value={UseCustomUrl}
-          onValueChange={val => {
-            MMKV.setBool('UseCustomUrl', val);
-            setUseCustomUrl(val);
-          }}
-        />
-      </View> */}
-
-      {/* Base URL */}
-      {UseCustomUrl && (
-        <View className=" flex-row items-center px-4 justify-between mt-5 bg-tertiary p-2 rounded-md">
-          <Text className="text-white font-semibold">Base Url</Text>
-          <TextInput
-            className="bg-secondary text-white p-1 px-2 rounded-md"
-            placeholder="example-https://vegamovies.cash"
-            value={BaseUrl}
-            onChangeText={onChange}
-          />
-        </View>
-      )}
-
-      {/* open in vlc */}
-      <View className="flex-row items-center px-4 justify-between mt-5 bg-tertiary p-2 rounded-md">
-        <Text className="text-white font-semibold">
-          Open video in External player
-        </Text>
-        <View className="w-20">
-          <Dropdown
-            selectedTextStyle={{
-              color: 'white',
-              overflow: 'hidden',
-              height: 23,
-            }}
-            containerStyle={{
-              borderColor: 'black',
-              width: 100,
-              overflow: 'hidden',
-            }}
-            labelField={'label'}
-            valueField={'value'}
-            placeholder="Select"
-            value={OpenExternalPlayer}
-            data={players}
-            onChange={async player => {
-              if (player.value === 'vlc') {
-                try {
-                  await SharedGroupPreferences.isAppInstalledAndroid(
-                    'org.videolan.vlc',
-                  );
-                } catch (error) {
-                  Alert.alert(
-                    'VLC not installed',
-                    'VLC player is not installed on your device',
-                    [
-                      {
-                        text: 'Cancel',
-                        onPress: () => {
-                          // setOpenExternalPlayer('None');
-                          // MMKV.setString('externalPlayer', 'None');
-                        },
-                      },
-                      {
-                        text: 'Install',
-                        onPress: () =>
-                          Linking.openURL(
-                            'market://details?id=org.videolan.vlc',
-                          ),
-                      },
-                    ],
-                  );
-                }
-              } else if (player.value === 'mx') {
-                try {
-                  await SharedGroupPreferences.isAppInstalledAndroid(
-                    'com.mxtech.videoplayer.ad',
-                  );
-                } catch (error) {
-                  Alert.alert(
-                    'MX Player not installed',
-                    'MX player is not installed on your device',
-                    [
-                      {
-                        text: 'Cancel',
-                        onPress: () => {
-                          // setOpenExternalPlayer('None');
-                          // MMKV.setString('externalPlayer', 'None');
-                        },
-                      },
-                      {
-                        text: 'Install',
-                        onPress: () => {
-                          Linking.openURL(
-                            'market://details?id=com.mxtech.videoplayer.ad',
-                          );
-                        },
-                      },
-                    ],
-                  );
-                }
-              }
-              MMKV.setString('externalPlayer', player.value);
-              setOpenExternalPlayer(player);
-            }}
-            renderItem={item => {
-              return (
-                <View className="p-2 bg-black text-white w-48 flex-row justify-start gap-2 items-center">
-                  <Text className=" text-white">{item.label}</Text>
+                  <Feather name="chevron-right" size={20} color="gray" />
                 </View>
-              );
-            }}
-          />
-        </View>
-        {/* <Switch
-          thumbColor={OpenVlc ? 'tomato' : 'gray'}
-          value={OpenVlc}
-          onValueChange={async val => {
-            MMKV.setBool('vlc', val);
-            setOpenVlc(val);
-            if (val) {
-              const res = await Linking.canOpenURL('vlc://');
-              if (!res) {
-                Alert.alert(
-                  'VLC not installed',
-                  'VLC player is not installed on your device',
-                  [
-                    {text: 'Cancel', onPress: () => setOpenVlc(false)},
-                    {
-                      text: 'Install',
-                      onPress: () =>
-                        Linking.openURL('market://details?id=org.videolan.vlc'),
-                    },
-                  ],
-                );
-              }
-            }
-          }}
-        /> */}
+              </TouchableNativeFeedback>
+            </View>
+          </View>
+        </AnimatedSection>
+
+        {/* Main options section */}
+        <AnimatedSection delay={200}>
+          <View className="mb-6">
+            <Text className="text-gray-400 text-sm mb-3">Options</Text>
+            <View className="bg-[#1A1A1A] rounded-xl overflow-hidden">
+              {/* Downloads */}
+              <TouchableNativeFeedback
+                onPress={() => navigation.navigate('Downloads')}
+                background={TouchableNativeFeedback.Ripple('#333333', false)}>
+                <View className="flex-row items-center justify-between p-4 border-b border-[#262626]">
+                  <View className="flex-row items-center">
+                    <MaterialCommunityIcons
+                      name="folder-download"
+                      size={22}
+                      color={primary}
+                    />
+                    <Text className="text-white ml-3 text-base">Downloads</Text>
+                  </View>
+                  <Feather name="chevron-right" size={20} color="gray" />
+                </View>
+              </TouchableNativeFeedback>
+
+              {/* Subtitle Style */}
+              <TouchableNativeFeedback
+                onPress={async () => {
+                  navigation.navigate('SubTitlesPreferences');
+                }}
+                background={TouchableNativeFeedback.Ripple('#333333', false)}>
+                <View className="flex-row items-center justify-between p-4 border-b border-[#262626]">
+                  <View className="flex-row items-center">
+                    <MaterialCommunityIcons
+                      name="subtitles"
+                      size={22}
+                      color={primary}
+                    />
+                    <Text className="text-white ml-3 text-base">
+                      Subtitle Style
+                    </Text>
+                  </View>
+                  <Feather name="chevron-right" size={20} color="gray" />
+                </View>
+              </TouchableNativeFeedback>
+
+              {/* Disable Providers */}
+              {/* <TouchableNativeFeedback
+                onPress={() => navigation.navigate('DisableProviders')}
+                background={TouchableNativeFeedback.Ripple('#333333', false)}>
+                <View className="flex-row items-center justify-between p-4 border-b border-[#262626]">
+                  <View className="flex-row items-center">
+                    <MaterialIcons name="block" size={22} color={primary} />
+                    <Text className="text-white ml-3 text-base">
+                      Disable Providers in Search
+                    </Text>
+                  </View>
+                  <Feather name="chevron-right" size={20} color="gray" />
+                </View>
+              </TouchableNativeFeedback> */}
+
+              {/* Watch History */}
+              <TouchableNativeFeedback
+                onPress={() => navigation.navigate('WatchHistoryStack')}
+                background={TouchableNativeFeedback.Ripple('#333333', false)}>
+                <View className="flex-row items-center justify-between p-4 border-b border-[#262626]">
+                  <View className="flex-row items-center">
+                    <MaterialCommunityIcons
+                      name="history"
+                      size={22}
+                      color={primary}
+                    />
+                    <Text
+                      className="text-white ml-3 text-base"
+                      numberOfLines={1}>
+                      Watch History
+                    </Text>
+                  </View>
+                  <Feather name="chevron-right" size={20} color="gray" />
+                </View>
+              </TouchableNativeFeedback>
+
+              {/* Preferences */}
+              <TouchableNativeFeedback
+                onPress={() => navigation.navigate('Preferences')}
+                background={TouchableNativeFeedback.Ripple('#333333', false)}>
+                <View className="flex-row items-center justify-between p-4">
+                  <View className="flex-row items-center">
+                    <MaterialIcons
+                      name="room-preferences"
+                      size={22}
+                      color={primary}
+                    />
+                    <Text className="text-white ml-3 text-base">
+                      Preferences
+                    </Text>
+                  </View>
+                  <Feather name="chevron-right" size={20} color="gray" />
+                </View>
+              </TouchableNativeFeedback>
+            </View>
+          </View>
+        </AnimatedSection>
+
+        {/* Data Management section */}
+        <AnimatedSection delay={300}>
+          <View className="mb-6">
+            <Text className="text-gray-400 text-sm mb-3">Data Management</Text>
+            <View className="bg-[#1A1A1A] rounded-xl overflow-hidden">
+              {/* Clear Cache */}
+              <View className="flex-row items-center justify-between p-4 border-b border-[#262626]">
+                <Text className="text-white text-base">Clear Cache</Text>
+                <TouchableOpacity
+                  className="bg-[#262626] px-4 py-2 rounded-lg"
+                  onPress={clearCacheHandler}>
+                  <MaterialCommunityIcons
+                    name="delete-outline"
+                    size={20}
+                    color={primary}
+                  />
+                </TouchableOpacity>
+              </View>
+
+              {/* Clear Watch History */}
+              <View className="flex-row items-center justify-between p-4">
+                <Text className="text-white text-base flex-1" numberOfLines={1}>
+                  Clear Watch History
+                </Text>
+                <TouchableOpacity
+                  className="bg-[#262626] px-4 py-2 rounded-lg"
+                  onPress={clearHistoryHandler}>
+                  <MaterialCommunityIcons
+                    name="delete-outline"
+                    size={20}
+                    color={primary}
+                  />
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </AnimatedSection>
+
+        {/* About & GitHub section */}
+        <AnimatedSection delay={400}>
+          <View className="mb-6">
+            <Text className="text-gray-400 text-sm mb-3">About</Text>
+            <View className="bg-[#1A1A1A] rounded-xl overflow-hidden">
+              {/* About */}
+              <TouchableNativeFeedback
+                onPress={() => navigation.navigate('About')}
+                background={TouchableNativeFeedback.Ripple('#333333', false)}>
+                <View className="flex-row items-center justify-between p-4 border-b border-[#262626]">
+                  <View className="flex-row items-center">
+                    <Feather name="info" size={22} color={primary} />
+                    <Text className="text-white ml-3 text-base">About</Text>
+                  </View>
+                  <Feather name="chevron-right" size={20} color="gray" />
+                </View>
+              </TouchableNativeFeedback>
+
+              {/* GitHub */}
+              {/* <TouchableNativeFeedback
+                onPress={() => Linking.openURL(socialLinks.github)}
+                background={TouchableNativeFeedback.Ripple('#333333', false)}>
+                <View className="flex-row items-center justify-between p-4 border-b border-[#262626]">
+                  <View className="flex-row items-center">
+                    <AntDesign name="github" size={22} color={primary} />
+                    <Text className="text-white ml-3 text-base">
+                      Give a star ⭐
+                    </Text>
+                  </View>
+                  <Feather name="external-link" size={20} color="gray" />
+                </View>
+              </TouchableNativeFeedback> */}
+            </View>
+          </View>
+        </AnimatedSection>
       </View>
-
-      {/* Subtitle Style  */}
-      <TouchableNativeFeedback
-        onPress={async () => {
-          ReactNativeHapticFeedback.trigger('virtualKey', {
-            enableVibrateFallback: true,
-            ignoreAndroidSystemSettings: false,
-          });
-          await startActivityAsync(ActivityAction.CAPTIONING_SETTINGS);
-        }}
-        background={TouchableNativeFeedback.Ripple('gray', false)}>
-        <View className=" flex-row items-center px-4 justify-between mt-5 bg-tertiary p-2 rounded-md">
-          <Text className="text-white font-semibold my-2">Subtitle Style</Text>
-          <Feather name="chevron-right" size={24} color="white" />
-        </View>
-      </TouchableNativeFeedback>
-
-      {/* disable providers in search */}
-      <TouchableNativeFeedback
-        onPress={async () => {
-          navigation.navigate('DisableProviders');
-        }}
-        background={TouchableNativeFeedback.Ripple('gray', false)}>
-        <View className=" flex-row items-center px-4 justify-between mt-5 bg-tertiary p-2 rounded-md">
-          <Text className="text-white font-semibold my-2">
-            Disable Providers in Search
-          </Text>
-          <Feather name="chevron-right" size={24} color="white" />
-        </View>
-      </TouchableNativeFeedback>
-
-      {/* Excluded qualities */}
-      <View className=" flex-row items-center px-4 justify-between mt-5 bg-tertiary p-2 rounded-md">
-        <Text className="text-white font-semibold">Excluded qualities</Text>
-        <View className="flex flex-row flex-wrap">
-          {['480p', '720p', '1080p'].map((quality, index) => (
-            <TouchableOpacity
-              key={index}
-              className={`bg-secondary p-2 rounded-md m-1 ${
-                ExcludedQualities.includes(quality) ? 'bg-primary' : ''
-              }`}
-              onPress={() => {
-                ReactNativeHapticFeedback.trigger('effectTick', {
-                  enableVibrateFallback: true,
-                  ignoreAndroidSystemSettings: false,
-                });
-                if (ExcludedQualities.includes(quality)) {
-                  setExcludedQualities(prev => prev.filter(q => q !== quality));
-                  MMKV.setArray(
-                    'ExcludedQualities',
-                    ExcludedQualities.filter(q => q !== quality),
-                  );
-                } else {
-                  setExcludedQualities(prev => [...prev, quality]);
-                  MMKV.setArray('ExcludedQualities', [
-                    ...ExcludedQualities,
-                    quality,
-                  ]);
-                }
-                console.log(ExcludedQualities);
-              }}>
-              <Text className="text-white text-xs rounded-md px-1">
-                {quality}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-
-      {/* clear cache */}
-      <View className=" flex-row items-center px-4 justify-between mt-5 bg-tertiary p-2 rounded-md">
-        <Text className="text-white font-semibold">Clear Cache</Text>
-        <TouchableOpacity
-          className="bg-secondary p-2 rounded-md"
-          onPress={() => {
-            ReactNativeHapticFeedback.trigger('virtualKey', {
-              enableVibrateFallback: true,
-              ignoreAndroidSystemSettings: false,
-            });
-            MmmkvCache.clearStore();
-          }}>
-          <Text className="text-white rounded-md px-2">Clear</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* version */}
-      <TouchableNativeFeedback
-        onPress={checkForUpdate}
-        disabled={updateLoading}
-        background={TouchableNativeFeedback.Ripple('gray', false)}>
-        <View className=" flex-row items-center px-4 justify-between mt-5 bg-tertiary p-2 rounded-md">
-          <Text className="text-white font-semibold my-2">
-            Check for Updates
-          </Text>
-          <Text className="text-white font-semibold my-2">v{pkg.version}</Text>
-        </View>
-      </TouchableNativeFeedback>
-    </View>
+    </Animated.ScrollView>
   );
 };
 

@@ -1,103 +1,149 @@
-import {FlatList, Image, Text, TouchableOpacity, View} from 'react-native';
-import React from 'react';
+import {Image, Pressable, Text, TouchableOpacity, View} from 'react-native';
+import React, {memo, useCallback} from 'react';
 import type {Post} from '../lib/providers/types';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import {useNavigation} from '@react-navigation/native';
 import {HomeStackParamList} from '../App';
-import {Skeleton} from 'moti/skeleton';
-import {MotiView} from 'moti';
 import useContentStore from '../lib/zustand/contentStore';
+import {FlashList} from '@shopify/flash-list';
+import SkeletonLoader from './Skeleton';
 
-export default function Slider({
+// import useWatchHistoryStore from '../lib/zustand/watchHistrory';
+import useThemeStore from '../lib/zustand/themeStore';
+
+const Slider = ({
   isLoading,
   title,
   posts,
   filter,
   providerValue,
+  isSearch = false,
+  error,
 }: {
   isLoading: boolean;
   title: string;
   posts: Post[];
   filter: string;
   providerValue?: string;
-}): JSX.Element {
+  isSearch?: boolean;
+  error?: string;
+}): React.ReactElement => {
   const {provider} = useContentStore(state => state);
+  const {primary} = useThemeStore(state => state);
   const navigation =
     useNavigation<NativeStackNavigationProp<HomeStackParamList>>();
+  const [isSelected, setSelected] = React.useState('');
+  // const {removeItem} = useWatchHistoryStore(state => state);
+
+  const handleMorePress = useCallback(() => {
+    navigation.navigate('ScrollList', {
+      title: title,
+      filter: filter,
+      providerValue: providerValue,
+      isSearch: isSearch,
+    });
+  }, [navigation, title, filter, providerValue, isSearch]);
+
+  const handleItemPress = useCallback(
+    (item: Post) => {
+      setSelected('');
+      navigation.navigate('Info', {
+        link: item.link,
+        provider: item.provider || providerValue || provider?.value,
+        poster: item?.image,
+      });
+    },
+    [navigation, providerValue, provider?.value],
+  );
+
+  const renderItem = useCallback(
+    ({item}: {item: Post}) => (
+      <View className="flex flex-col mx-2">
+        <TouchableOpacity
+          onLongPress={e => {
+            e.stopPropagation();
+          }}
+          onPress={e => {
+            e.stopPropagation();
+            handleItemPress(item);
+          }}>
+          <Image
+            className="rounded-md"
+            source={{
+              uri:
+                item?.image ||
+                'https://placehold.jp/24/363636/ffffff/100x150.png?text=vega',
+            }}
+            style={{width: 100, height: 150}}
+          />
+        </TouchableOpacity>
+        <Text className="text-white text-center truncate w-24 text-xs">
+          {item.title.length > 24
+            ? `${item.title.slice(0, 24)}...`
+            : item.title}
+        </Text>
+      </View>
+    ),
+    [handleItemPress],
+  );
+
+  const keyExtractor = useCallback((item: Post) => item.link, []);
 
   return (
-    <View className="gap-3 mt-7">
-      <View className="flex flex-row items-center justify-between px-4">
-        <Text className="text-2xl text-primary font-semibold">{title}</Text>
-        <TouchableOpacity
-          onPress={() =>
-            navigation.navigate('ScrollList', {
-              title: title,
-              filter: filter,
-              providerValue: providerValue,
-            })
-          }>
-          <Text className="text-white text-sm">more</Text>
-        </TouchableOpacity>
+    <Pressable onPress={() => setSelected('')} className="gap-3 mt-3 px-2">
+      <View className="flex flex-row items-center justify-between">
+        <Text
+          className="text-2xl font-semibold flex-1"
+          numberOfLines={1}
+          style={{color: primary}}>
+          {title}
+        </Text>
+        {filter !== 'recent' && (
+          <TouchableOpacity onPress={handleMorePress}>
+            <Text className="text-white text-sm">more</Text>
+          </TouchableOpacity>
+        )}
       </View>
       {isLoading ? (
-        <MotiView
-          animate={{backgroundColor: 'black'}}
-          //@ts-ignore
-          transition={{type: 'timing', delay: 0}}
-          className="flex flex-row gap-2 overflow-hidden">
-          {[...Array(4)].map((_, i) => (
-            <View className="mx-1 gap-1 flex" key={i}>
-              <Skeleton
-                key={i}
-                show={true}
-                colorMode="dark"
-                height={150}
-                width={100}
-              />
-              <View className="h-2" />
-              <Skeleton show={true} colorMode="dark" height={10} width={100} />
+        <View className="flex flex-row gap-2 overflow-hidden">
+          {Array.from({length: 20}).map((_, index) => (
+            <View
+              className="mx-3 gap-0 flex mb-3 justify-center items-center"
+              key={index}>
+              <SkeletonLoader height={150} width={100} />
+              <SkeletonLoader height={12} width={97} />
             </View>
           ))}
-        </MotiView>
+        </View>
       ) : (
-        <FlatList
+        <FlashList
+          estimatedItemSize={100}
           showsHorizontalScrollIndicator={false}
           data={posts}
+          extraData={isSelected}
           horizontal
-          renderItem={({item}) => (
-            <View className="flex flex-col mx-2">
-              <TouchableOpacity
-                onPress={() =>
-                  navigation.navigate('Info', {
-                    link: item.link,
-                    provider: providerValue || provider?.value,
-                    poster: item?.image,
-                  })
-                }>
-                <Image
-                  className="rounded-md"
-                  source={{
-                    uri:
-                      item?.image ||
-                      'https://placehold.jp/24/cccccc/ffffff/100x150.png?text=img',
-                  }}
-                  style={{width: 100, height: 150}}
-                />
-              </TouchableOpacity>
-              <Text className="text-white text-center truncate w-24 text-xs">
-                {item.title.length > 24
-                  ? item.title.slice(0, 24) + '...'
-                  : item.title}
-              </Text>
-            </View>
-          )}
-          keyExtractor={item => item.link}
+          contentContainerStyle={{paddingHorizontal: 3, paddingTop: 7}}
+          renderItem={renderItem}
+          keyExtractor={keyExtractor}
+          removeClippedSubviews={true}
+          drawDistance={300}
+          ListFooterComponent={
+            !isLoading && error ? (
+              <View className="flex flex-row w-96 justify-center h-10 items-center">
+                <Text className="text-red-500 text-center">{error}</Text>
+              </View>
+            ) : !isLoading && posts.length === 0 ? (
+              <View className="flex flex-row w-96 justify-center h-10 items-center">
+                <Text className="text-whiter text-center text-white">
+                  No content found
+                </Text>
+              </View>
+            ) : null
+          }
         />
       )}
-      {!isLoading && posts.length === 0 && (
-        <Text className="text-white text-center">No data</Text>
-      )}
-    </View>
+    </Pressable>
   );
-}
+};
+
+export default memo(Slider);

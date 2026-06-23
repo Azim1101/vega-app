@@ -1,26 +1,11 @@
-import RNFS from 'react-native-fs';
+import {settingsStorage} from '../storage';
+import {findDownloadedFileByBaseName} from '../downloadLocation';
 
-// check if file exists in download folder/vega folder
+// check if file exists in download folder folder
 
 export const ifExists = async (fileName: string) => {
-  const downloadDir = `${RNFS.DownloadDirectoryPath}/vega`;
-
-  try {
-    const files = await RNFS.readDir(downloadDir);
-
-    // Find a file with the given name (without extension)
-    const file = files.find(file => {
-      const nameWithoutExtension = file.name.split('.').slice(0, -1).join('.');
-      return nameWithoutExtension === fileName;
-    });
-
-    if (file) {
-      return file.path;
-    } else {
-      return false;
-    }
-  } catch (error) {
-    console.error('Error reading directory:', error);
-    return false;
-  }
+  return findDownloadedFileByBaseName(
+    settingsStorage.getDownloadLocationConfig(),
+    fileName,
+  );
 };
